@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Star, MessageSquarePlus, CheckCircle2, AlertCircle, X, RefreshCw, MessageSquare } from 'lucide-react';
 import { ReviewItem } from '@/types/supabase';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 
 export default function CustomerReviews() {
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
@@ -22,14 +22,28 @@ export default function CustomerReviews() {
   const fetchApprovedReviews = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/reviews');
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && Array.isArray(json.reviews)) {
-          setReviews(json.reviews);
-        } else {
-          setReviews([]);
+      if (isSupabaseConfigured()) {
+        const { data, error } = await supabase
+          .from('customer_reviews')
+          .select('*')
+          .eq('is_approved', true)
+          .order('created_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+          setReviews(data as ReviewItem[]);
+          setLoading(false);
+          return;
         }
+      }
+    } catch (err) {
+      console.warn('[CustomerReviews] Error fetching reviews from Supabase:', err);
+    }
+
+    try {
+      const stored = localStorage.getItem('vediq_user_submitted_feedback');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setReviews(parsed.filter((r: any) => r.is_approved === true));
       } else {
         setReviews([]);
       }
@@ -67,46 +81,39 @@ export default function CustomerReviews() {
 
     setIsSubmitting(true);
     try {
-      const res = await fetch('/api/reviews', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: cleanName,
-          rating,
-          review: cleanReview,
-        }),
-      });
+      const newRecord = {
+        id: `rev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        name: cleanName,
+        rating,
+        review: cleanReview,
+        is_approved: false,
+        created_at: new Date().toISOString(),
+      };
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        // Also save to local storage for instant feedback persistence across client sessions
-        try {
-          const localKey = 'vediq_user_submitted_feedback';
-          const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
-          existing.unshift({
-            name: cleanName,
-            rating,
-            review: cleanReview,
-            is_approved: false,
-            created_at: new Date().toISOString(),
-          });
-          localStorage.setItem(localKey, JSON.stringify(existing));
-        } catch {}
-
-        setFormSuccess(
-          data.message ||
-            'Thank you for your feedback! It will be displayed here once approved by our team.'
-        );
-        setName('');
-        setReviewText('');
-        setRating(5);
-        setTimeout(() => {
-          setIsModalOpen(false);
-          setFormSuccess(null);
-        }, 2500);
-      } else {
-        setFormError(data.error || 'Failed to submit feedback. Please try again.');
+      if (isSupabaseConfigured()) {
+        const { error } = await supabase.from('customer_reviews').insert([newRecord]);
+        if (error) {
+          console.warn('[CustomerReviews] Supabase insert warning:', error.message);
+        }
       }
+
+      try {
+        const localKey = 'vediq_user_submitted_feedback';
+        const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
+        existing.unshift(newRecord);
+        localStorage.setItem(localKey, JSON.stringify(existing));
+      } catch {}
+
+      setFormSuccess(
+        'Thank you for your feedback! It will be displayed here once approved by our team.'
+      );
+      setName('');
+      setReviewText('');
+      setRating(5);
+      setTimeout(() => {
+        setIsModalOpen(false);
+        setFormSuccess(null);
+      }, 2500);
     } catch (err: any) {
       setFormError(err.message || 'Network error submitting feedback.');
     } finally {

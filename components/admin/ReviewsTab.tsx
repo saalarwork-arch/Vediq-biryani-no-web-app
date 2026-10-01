@@ -34,44 +34,23 @@ export default function ReviewsTab({ showToast }: ReviewsTabProps) {
   const fetchReviews = useCallback(async () => {
     setLoading(true);
     try {
-      // 1. Get session token for admin authentication
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      const { data, error } = await supabase
+        .from('customer_reviews')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-      let fetchedFromApi = false;
-
-      if (token) {
-        try {
-          const res = await fetch('/api/admin/reviews', {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success && Array.isArray(data.reviews)) {
-              setReviews(data.reviews);
-              fetchedFromApi = true;
-            }
-          }
-        } catch (apiErr) {
-          console.warn('[ReviewsTab] Admin API fetch error:', apiErr);
-        }
-      }
-
-      if (!fetchedFromApi) {
-        // Fallback directly to Supabase client
-        const { data, error } = await supabase
+      if (!error && Array.isArray(data)) {
+        setReviews(data as ReviewItem[]);
+      } else {
+        // Try fallback table 'reviews'
+        const { data: revData, error: revError } = await supabase
           .from('reviews')
           .select('*')
           .order('created_at', { ascending: false });
 
-        if (!error && data) {
-          setReviews(data as ReviewItem[]);
+        if (!revError && Array.isArray(revData)) {
+          setReviews(revData as ReviewItem[]);
         } else {
-          // Check local client storage for any user-submitted reviews if table isn't migrated yet
           try {
             const localKey = 'vediq_user_submitted_feedback';
             const localList = JSON.parse(localStorage.getItem(localKey) || '[]');
@@ -102,56 +81,27 @@ export default function ReviewsTab({ showToast }: ReviewsTabProps) {
   const handleToggleApproval = async (review: ReviewItem, targetApproved: boolean) => {
     setUpdatingId(review.id);
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      const { error } = await supabase
+        .from('customer_reviews')
+        .update({ is_approved: targetApproved, updated_at: new Date().toISOString() })
+        .eq('id', review.id);
 
-      let apiSuccess = false;
-
-      if (token) {
-        try {
-          const res = await fetch('/api/admin/reviews', {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              id: review.id,
-              is_approved: targetApproved,
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success) {
-              apiSuccess = true;
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (!apiSuccess) {
-        // Direct Supabase update fallback
-        const { error } = await supabase
+      if (error) {
+        await supabase
           .from('reviews')
           .update({ is_approved: targetApproved, updated_at: new Date().toISOString() })
           .eq('id', review.id);
 
-        if (error) {
-          // Update in local fallback storage
-          try {
-            const localKey = 'vediq_user_submitted_feedback';
-            const localList: ReviewItem[] = JSON.parse(localStorage.getItem(localKey) || '[]');
-            const updated = localList.map((item) =>
-              item.id === review.id ? { ...item, is_approved: targetApproved } : item
-            );
-            localStorage.setItem(localKey, JSON.stringify(updated));
-          } catch {}
-        }
+        try {
+          const localKey = 'vediq_user_submitted_feedback';
+          const localList: ReviewItem[] = JSON.parse(localStorage.getItem(localKey) || '[]');
+          const updated = localList.map((item) =>
+            item.id === review.id ? { ...item, is_approved: targetApproved } : item
+          );
+          localStorage.setItem(localKey, JSON.stringify(updated));
+        } catch {}
       }
 
-      // Update local React state
       setReviews((prev) =>
         prev.map((r) => (r.id === review.id ? { ...r, is_approved: targetApproved } : r))
       );
@@ -175,41 +125,15 @@ export default function ReviewsTab({ showToast }: ReviewsTabProps) {
 
     setUpdatingId(reviewId);
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      await supabase.from('customer_reviews').delete().eq('id', reviewId);
+      await supabase.from('reviews').delete().eq('id', reviewId);
 
-      let apiSuccess = false;
-
-      if (token) {
-        try {
-          const res = await fetch(`/api/admin/reviews?id=${encodeURIComponent(reviewId)}`, {
-            method: 'DELETE',
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success) {
-              apiSuccess = true;
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (!apiSuccess) {
-        await supabase.from('reviews').delete().eq('id', reviewId);
-
-        // Also clean from local storage fallback
-        try {
-          const localKey = 'vediq_user_submitted_feedback';
-          const localList: ReviewItem[] = JSON.parse(localStorage.getItem(localKey) || '[]');
-          const updated = localList.filter((item) => item.id !== reviewId);
-          localStorage.setItem(localKey, JSON.stringify(updated));
-        } catch {}
-      }
+      try {
+        const localKey = 'vediq_user_submitted_feedback';
+        const localList: ReviewItem[] = JSON.parse(localStorage.getItem(localKey) || '[]');
+        const updated = localList.filter((item) => item.id !== reviewId);
+        localStorage.setItem(localKey, JSON.stringify(updated));
+      } catch {}
 
       setReviews((prev) => prev.filter((r) => r.id !== reviewId));
       showToast('Review permanently deleted.', 'info');

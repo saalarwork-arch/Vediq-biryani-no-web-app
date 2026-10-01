@@ -243,46 +243,7 @@ export async function uploadImageToStorage(
       }
     }
 
-    // 7. If Direct Upload failed or threw fetch exception, try server-side upload proxy
-    if (token && typeof window !== 'undefined') {
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('folder', folder);
-        formData.append('bucket', bucketName);
-
-        const serverRes = await fetch('/api/admin/upload-image', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formData,
-        });
-
-        if (serverRes.ok) {
-          const serverJson = await serverRes.json();
-          if (serverJson.success && serverJson.url) {
-            return {
-              success: true,
-              url: serverJson.url,
-              bucket: bucketName,
-              path: serverJson.path || filePath,
-            };
-          } else if (serverJson.error) {
-            directUploadError = new Error(serverJson.error);
-          }
-        } else {
-          const errData = await serverRes.json().catch(() => ({}));
-          if (errData.error) {
-            directUploadError = new Error(errData.error);
-          }
-        }
-      } catch (proxyErr) {
-        console.warn('[Storage upload fallback proxy exception]', proxyErr);
-      }
-    }
-
-    // 8. Analyze and format clean diagnostic message
+    // 7. Analyze and format clean diagnostic message
     const rawMsg =
       directUploadError?.message ||
       (typeof directUploadError === 'string' ? directUploadError : 'Upload failed');

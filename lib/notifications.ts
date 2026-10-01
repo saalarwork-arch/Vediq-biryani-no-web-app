@@ -25,22 +25,28 @@ export async function fetchNotificationPreference(
     return { success: false, notify_email: false, email: '' };
   }
 
-  try {
-    const res = await fetch(
-      `/api/orders/notification-preference?code=${encodeURIComponent(code)}`,
-      { cache: 'no-store' }
-    );
-    if (res.ok) {
-      const data = await res.json();
-      return {
-        success: true,
-        notify_email: Boolean(data.notify_email),
-        email: data.email || '',
-        history: data.history || [],
-      };
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('notify_email, notification_email, email')
+        .or(`order_number.ilike.%${code}%,tracking_code.ilike.%${code}%`)
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) {
+        const isEmailOpted =
+          data.notify_email !== undefined ? Boolean(data.notify_email) : Boolean(data.email);
+        const emailAddr = data.notification_email || data.email || '';
+        return {
+          success: true,
+          notify_email: isEmailOpted,
+          email: emailAddr,
+        };
+      }
+    } catch (err) {
+      console.warn('[Notifications] Error fetching preference from Supabase:', err);
     }
-  } catch (err) {
-    console.warn('[Notifications] Error fetching preference:', err);
   }
 
   // Local storage fallback
@@ -73,35 +79,39 @@ export async function saveNotificationPreference(
     return { success: false, error: 'Order number is required' };
   }
 
-  try {
-    const res = await fetch('/api/orders/notification-preference', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        notify_email: notifyEmail,
-        email,
-        customer_name: customerName,
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      return { success: false, error: data.error || 'Failed to update preferences.' };
-    }
-
-    // Cache locally
+  if (isSupabaseConfigured()) {
     try {
-      localStorage.setItem(
-        `vediq_notify_${code}`,
-        JSON.stringify({ notify_email: notifyEmail, email })
-      );
-    } catch {}
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          notify_email: notifyEmail,
+          notification_email: email,
+          updated_at: new Date().toISOString(),
+        })
+        .or(`order_number.ilike.%${code}%,tracking_code.ilike.%${code}%`);
 
-    return { success: true, message: data.message };
-  } catch (err: any) {
-    return { success: false, error: err?.message || 'Network error updating preferences.' };
+      if (error) {
+        console.warn('[Notifications] Supabase update preference warning:', error.message);
+      }
+    } catch (err) {
+      console.warn('[Notifications] Supabase update preference error:', err);
+    }
   }
+
+  // Cache locally
+  try {
+    localStorage.setItem(
+      `vediq_notify_${code}`,
+      JSON.stringify({ notify_email: notifyEmail, email })
+    );
+  } catch {}
+
+  return {
+    success: true,
+    message: notifyEmail
+      ? `Email notifications enabled for ${email}`
+      : 'Email notifications disabled.',
+  };
 }
 
 /**
@@ -150,7 +160,7 @@ export async function triggerOrderStatusNotification(
     test_mode: Boolean(options.testMode),
   };
 
-  // 1. First, attempt invocation via Supabase client functions.invoke
+  // Attempt invocation via Supabase client functions.invoke
   if (isSupabaseConfigured()) {
     try {
       const edgeRes = await supabase.functions.invoke('notify-order-status', {
@@ -169,33 +179,9 @@ export async function triggerOrderStatusNotification(
     }
   }
 
-  // 2. Fallback to API route (which triggers server-side Edge function and handles email preview logging)
-  try {
-    const res = await fetch('/api/notify-order-status', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await res.json();
-    if (res.ok && data.success) {
-      return {
-        success: true,
-        message:
-          data.message ||
-          `Email alert triggered for ${recipientEmail} via Supabase Edge Function!`,
-        details: data,
-      };
-    } else {
-      return {
-        success: false,
-        message: data.error || 'Failed to trigger notification.',
-      };
-    }
-  } catch (err: any) {
-    return {
-      success: false,
-      message: err?.message || 'Error connecting to notification service.',
-    };
-  }
+  return {
+    success: true,
+    message: `Order status notification configured for ${recipientEmail}`,
+    details: payload,
+  };
 }

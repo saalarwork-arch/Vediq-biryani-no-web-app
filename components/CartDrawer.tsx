@@ -98,25 +98,8 @@ export default function CartDrawer() {
     try {
       let finalOrderData = newOrder;
 
-      // 1. Send order to backend API route for reliable database persistence
-      try {
-        const res = await fetch('/api/orders', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ order: newOrder }),
-        });
-        const result = await res.json();
-        if (res.ok && result.success && result.order) {
-          finalOrderData = {
-            ...result.order,
-            tracking_code: result.tracking_code || result.order.order_number,
-          };
-        } else if (!res.ok && !result.success) {
-          console.warn('[CartDrawer] API Orders response warning:', result.error);
-        }
-      } catch (apiErr) {
-        console.warn('[CartDrawer] API Orders call error, trying direct client:', apiErr);
-        if (isSupabaseConfigured()) {
+      if (isSupabaseConfigured()) {
+        try {
           const { data: directData, error } = await supabase.from('orders').insert([
             {
               order_number: newOrder.order_number,
@@ -150,6 +133,8 @@ export default function CartDrawer() {
           } else if (directData) {
             finalOrderData = directData as CustomerOrder;
           }
+        } catch (dbErr) {
+          console.warn('[CartDrawer] Direct Supabase insert exception:', dbErr);
         }
       }
 

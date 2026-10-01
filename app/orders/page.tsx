@@ -73,18 +73,22 @@ export default function OrderHistoryPage() {
         }
       }
 
-      // 1. Fetch from backend API
+      // 1. Fetch from Supabase client directly
       let remoteOrders: CustomerOrder[] = [];
-      if (targetEmail || targetPhone) {
+      if ((targetEmail || targetPhone) && isSupabaseConfigured()) {
         try {
-          const params = new URLSearchParams();
-          if (targetEmail) params.append('email', targetEmail);
-          if (targetPhone) params.append('phone', targetPhone);
+          let query = supabase.from('orders').select('*');
+          if (targetEmail && targetPhone) {
+            query = query.or(`email.ilike.%${targetEmail}%,phone.ilike.%${targetPhone}%`);
+          } else if (targetEmail) {
+            query = query.ilike('email', `%${targetEmail}%`);
+          } else if (targetPhone) {
+            query = query.ilike('phone', `%${targetPhone}%`);
+          }
 
-          const res = await fetch(`/api/orders/user?${params.toString()}`);
-          const data = await res.json();
-          if (res.ok && data.success && Array.isArray(data.orders)) {
-            remoteOrders = data.orders;
+          const { data, error } = await query.order('created_at', { ascending: false });
+          if (!error && Array.isArray(data)) {
+            remoteOrders = data as CustomerOrder[];
           }
         } catch (e) {
           console.warn('[OrderHistory] Remote orders query error:', e);

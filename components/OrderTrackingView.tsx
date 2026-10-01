@@ -52,10 +52,19 @@ export default function OrderTrackingView({
   isStandalonePage = false,
 }: OrderTrackingViewProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const queryParamCode = searchParams?.get('code') || searchParams?.get('order_number') || '';
+  const [queryParamCode, setQueryParamCode] = useState<string>('');
 
-  const [orderQuery, setOrderQuery] = useState<string>(initialCode || queryParamCode || '');
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code') || params.get('order_number') || '';
+      if (code) {
+        setQueryParamCode(code);
+      }
+    }
+  }, []);
+
+  const [orderQuery, setOrderQuery] = useState<string>(initialCode || '');
   const [activeOrder, setActiveOrder] = useState<CustomerOrder | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -100,23 +109,53 @@ export default function OrderTrackingView({
     }
 
     try {
-      const res = await fetch(`/api/track-order?code=${encodeURIComponent(cleanCode)}`, {
-        cache: 'no-store',
-      });
-      const data = await res.json();
+      let foundOrder: CustomerOrder | null = null;
 
-      if (!res.ok || !data.success || !data.order) {
+      if (isSupabaseConfigured()) {
+        try {
+          const { data, error } = await supabase
+            .from('orders')
+            .select('*')
+            .or(`order_number.ilike.%${cleanCode}%,tracking_code.ilike.%${cleanCode}%,phone.ilike.%${cleanCode}%,email.ilike.%${cleanCode}%`)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!error && data) {
+            foundOrder = data as CustomerOrder;
+          }
+        } catch (dbErr) {
+          console.warn('[OrderTrackingView] Supabase tracking query exception:', dbErr);
+        }
+      }
+
+      if (!foundOrder) {
+        try {
+          const stored: CustomerOrder[] = JSON.parse(localStorage.getItem('vediq_user_orders') || '[]');
+          const match = stored.find(
+            (o) =>
+              o.order_number?.toLowerCase() === cleanCode.toLowerCase() ||
+              o.tracking_code?.toLowerCase() === cleanCode.toLowerCase() ||
+              o.phone?.includes(cleanCode) ||
+              o.email?.toLowerCase() === cleanCode.toLowerCase()
+          );
+          if (match) {
+            foundOrder = match;
+          }
+        } catch {}
+      }
+
+      if (!foundOrder) {
         if (!isSilentRefresh) {
-          setErrorMsg(data.error || `No order found matching "${cleanCode}".`);
+          setErrorMsg(`No order found matching "${cleanCode}". Please check your order number or phone.`);
           setActiveOrder(null);
         }
       } else {
-        const orderData = data.order as CustomerOrder;
+        const orderData = foundOrder;
         setActiveOrder(orderData);
         setErrorMsg('');
         setLastRefreshedAt(new Date());
 
-        // Initialize email notification preferences
         const isEmailOpted =
           orderData.notify_email !== undefined
             ? Boolean(orderData.notify_email)
@@ -126,7 +165,6 @@ export default function OrderTrackingView({
         setNotificationEmail(emailAddr);
         setEmailInput(emailAddr);
 
-        // Update local cache with latest status
         try {
           const stored: CustomerOrder[] = JSON.parse(localStorage.getItem('vediq_user_orders') || '[]');
           const updated = [
@@ -135,9 +173,7 @@ export default function OrderTrackingView({
           ];
           localStorage.setItem('vediq_user_orders', JSON.stringify(updated.slice(0, 10)));
           setRecentOrders(updated.slice(0, 10));
-        } catch {
-          // ignore
-        }
+        } catch {}
       }
     } catch (err: any) {
       if (!isSilentRefresh) {
